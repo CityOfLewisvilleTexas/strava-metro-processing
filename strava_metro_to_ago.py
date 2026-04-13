@@ -211,8 +211,9 @@ def main():
     edge_shp = os.getenv("EDGE_SHP")
     edge_csv = os.getenv("EDGE_CSV")
     #edge_count_fields = os.getenv("EDGE_COUNT_FIELDS")
-    output_dir = os.getenv("OUTPUT_DIR")
+    output_dir = Path(os.getenv("OUTPUT_DIR"))
     uid_field = "edge_uid"
+    output_suffix = "_" + output_dir.name
 
     inspect_fields(edge_shp, edge_csv, uid_field)
 
@@ -225,7 +226,7 @@ def main():
         uid_field=uid_field, count_fields=EDGE_COUNT_FIELDS,
         date_field=date_field
     )
-    edge_zip = gdf_to_zipped_shp(edge_gdf, "strava_edges", output_dir)
+    edge_zip = gdf_to_zipped_shp(edge_gdf, "strava_edges" + output_suffix, output_dir)
     #edge_id  = publish_or_overwrite(gis, edge_zip, EDGE_TITLE,
     #                                date_short, SHARE_ORG)
 
@@ -236,7 +237,7 @@ def main():
     #    uid_field="hex_uid", count_fields=HEX_COUNT_FIELDS,
     #    date_field=DATE_FIELD
     #)
-    #hex_zip = gdf_to_zipped_shp(hex_gdf, "strava_hexagons", OUTPUT_DIR)
+    #hex_zip = gdf_to_zipped_shp(hex_gdf, "strava_hexagons" + output_suffix, OUTPUT_DIR)
     #hex_id  = publish_or_overwrite(gis, hex_zip, HEX_TITLE,
     #                               date_short, SHARE_ORG)
     #print(f"\nDone.\n  Edge layer  : https://www.arcgis.com/home/item.html?id={edge_id}")

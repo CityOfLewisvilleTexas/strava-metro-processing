@@ -60,67 +60,68 @@ def normalize_columns(gdf: gpd.GeoDataFrame, df: pd.DataFrame) -> tuple:
     """Strip whitespace and lowercase all column names."""
     gdf.columns = [c.strip().lower() for c in gdf.columns]
     df.columns  = [c.strip().lower() for c in df.columns]
-    return gdf, df    
+    return gdf, df
 
 
 def read_and_join(shp_path: str, csv_path: str, uid_field: str,
                   count_fields: list, date_field: str) -> gpd.GeoDataFrame:
-    """
-    Read shapefile + CSV, merge on uid_field.
-    Returns a long-format GeoDataFrame with geometry replicated per date row.
-    Date column is cast to datetime for AGOL time-slider compatibility.
-    """
     gdf = gpd.read_file(shp_path)
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
-    df = pd.read_csv(csv_path, parse_dates=[date_field])
+
+    df = pd.read_csv(csv_path)
 
     gdf, df = normalize_columns(gdf, df)
 
-    # Keep only relevant columns from CSV
     keep_cols = [uid_field, date_field] + [f for f in count_fields if f in df.columns]
-    print(f'columns to be preserved: {keep_cols}')
     df = df[keep_cols].copy()
-    print(f'data frame head: {df.head}')
-    print(f'data frame tail: {df.tail}')
 
-    # Merge — geometry is repeated for every date row (required for time slider)
+    # Convert to true date-only values for shapefile compatibility
+    df[date_field] = pd.to_datetime(df[date_field], errors="raise").dt.date
+
     merged = gdf.merge(df, on=uid_field, how="inner")
-    merged[date_field] = pd.to_datetime(merged[date_field])
 
     print(f"  Shapefile rows : {len(gdf):,}")
     print(f"  CSV rows       : {len(df):,}")
     print(f"  Merged rows    : {len(merged):,}")
-    print(f"  Date range     : {merged[date_field].min().date()} → "
-          f"{merged[date_field].max().date()}")
+    print(f"  Date range     : {merged[date_field].min()} → {merged[date_field].max()}")
+
     return merged
 
 
-def gdf_to_zipped_shp(gdf: gpd.GeoDataFrame, stem: str, out_dir: str) -> str:
+def gdf_to_zipped_shp(gdf: gpd.GeoDataFrame, stem: str, out_dir: str
+                      ) -> tuple[str, dict]:
     """
     Write GeoDataFrame to a zipped shapefile (.zip) for AGOL upload.
     Shapefile field names are truncated to 10 chars; a sidecar JSON
     records the mapping back to full names.
+    Returns (zip_path, alias_map) where alias_map is
+    {truncated_name: original_name} for every field that was renamed.
+    Pass alias_map to apply_field_aliases() after publishing.
     """
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     shp_dir = os.path.join(out_dir, stem)
     os.makedirs(shp_dir, exist_ok=True)
 
-    # Shapefile field name length limit: 10 chars
-    rename_map = {}
     cols = [c for c in gdf.columns if c != "geometry"]
-    for col in cols:
-        short = col[:10]
-        if short != col:
-            rename_map[col] = short
+    rename_map = {c: c[:10] for c in cols if len(c) > 10}
 
-    out_gdf = gdf.copy()
     if rename_map:
-        out_gdf = out_gdf.rename(columns=rename_map)
-        # Save mapping for reference
+        truncated = list(rename_map.values())
+        if len(truncated) != len(set(truncated)):
+            raise ValueError(
+                f"Field name truncation collision detected: {rename_map}\n"
+                "Use GeoJSON output (gdf_to_geojson) for wide format."
+            )
+        out_gdf = gdf.rename(columns=rename_map)
+        # alias_map: truncated → original (for AGOL field alias update)
+        alias_map = {v: k for k, v in rename_map.items()}
         with open(os.path.join(shp_dir, "field_name_map.json"), "w") as f:
-            json.dump(rename_map, f, indent=2)
-        print(f"  Field names truncated: {rename_map}")
+            json.dump(alias_map, f, indent=2)
+        print(f"  Field name truncations (short → original): {alias_map}")
+    else:
+        out_gdf   = gdf.copy()
+        alias_map = {}
 
     shp_path = os.path.join(shp_dir, f"{stem}.shp")
     out_gdf.to_file(shp_path, driver="ESRI Shapefile")
@@ -130,8 +131,42 @@ def gdf_to_zipped_shp(gdf: gpd.GeoDataFrame, stem: str, out_dir: str) -> str:
         for f in Path(shp_dir).iterdir():
             zf.write(f, arcname=f.name)
     print(f"  Written: {zip_path}")
-    return zip_path
+    return zip_path, alias_map
 
+
+def apply_field_aliases(flc: FeatureLayerCollection, alias_map: dict):
+    """
+    Push field aliases to a hosted feature layer so that the original
+    (pre-truncation) field names are displayed in Map Viewer / popups.
+    alias_map: {truncated_field_name: original_field_name}
+    """
+    if not alias_map:
+        return
+    lyr = flc.layers[0]
+    current_fields = lyr.properties.fields
+    updated_fields = []
+    for field in current_fields:
+        # Round-trip through JSON to convert PropertyMap (and any nested
+        # PropertyMap values) into plain dicts that are JSON-serializable
+        plain = json.loads(json.dumps(dict(field)))
+        if plain["name"] in alias_map:
+            plain["alias"] = alias_map[plain["name"]]
+        updated_fields.append(plain)
+    lyr.manager.update_definition({"fields": updated_fields})
+    print(f"  Field aliases applied: {alias_map}")
+
+
+def assert_date_field(flc: FeatureLayerCollection, field_name: str):
+    lyr = flc.layers[0]
+    fld = next((f for f in lyr.properties.fields if f["name"].lower() == field_name.lower()), None)
+    if not fld:
+        raise ValueError(f"Field '{field_name}' not found on published layer.")
+    print(f"Published field '{field_name}' type: {fld['type']}")
+    if fld["type"] not in ("esriFieldTypeDate",):
+        raise ValueError(
+            f"Field '{field_name}' published as {fld['type']}, not a date field."
+        )
+    
 
 def enable_time_on_layer(flc: FeatureLayerCollection, date_field_short: str):
     """
@@ -158,8 +193,8 @@ def enable_time_on_layer(flc: FeatureLayerCollection, date_field_short: str):
 
 
 def publish_or_overwrite(gis: GIS, zip_path: str, title: str,
-                         date_field_short: str,
-                         share_org: bool) -> str:
+                         date_field_short: str, share_org: bool,
+                         alias_map: dict = None) -> str:
     """
     If an item with `title` already exists for this user, overwrite it.
     Otherwise, publish fresh. Returns the item ID.
@@ -183,11 +218,18 @@ def publish_or_overwrite(gis: GIS, zip_path: str, title: str,
         item = shp_item.publish()
         shp_item.delete()
 
-    # Share (value for everyone is hardcoded as public sharing violates Strava Metro terms)
-    item.share(org=share_org, everyone=False)
+    # Share (everyone=False — public sharing violates Strava Metro terms)
+    #item.share(org=share_org, everyone=False)
+    item.share(org=True, everyone=False)
 
-    # Enable time slider
     flc = FeatureLayerCollection.fromitem(item)
+
+    # Apply original field names as aliases
+    if alias_map:
+        apply_field_aliases(flc, alias_map)
+
+    assert_date_field(flc, date_field_short)
+    # Enable time slider
     enable_time_on_layer(flc, date_field_short)
 
     url = f"https://www.arcgis.com/home/item.html?id={item.id}"
@@ -204,8 +246,8 @@ def main():
     print("=== Strava Metro → ArcGIS Online ===\n")
 
     get_env_vars()
-    #gis = GIS(PORTAL_URL, USERNAME, PASSWORD)
-    #print(f"Logged in as: {gis.users.me.username}\n")
+    gis = GIS('home')
+    print(f"Logged in as: {gis.users.me.username}\n")
 
     date_field = os.getenv("DATE_FIELD")
     edge_shp = os.getenv("EDGE_SHP")
@@ -217,7 +259,7 @@ def main():
 
     inspect_fields(edge_shp, edge_csv, uid_field)
 
-    #date_short = get_short_field()
+    #date_short = get_short_field(date_field)
 
     # -- EDGES ----------------------------------------------------------------
     print("Processing edges...")
@@ -226,20 +268,22 @@ def main():
         uid_field=uid_field, count_fields=EDGE_COUNT_FIELDS,
         date_field=date_field
     )
-    edge_zip = gdf_to_zipped_shp(edge_gdf, "strava_edges" + output_suffix, output_dir)
-    #edge_id  = publish_or_overwrite(gis, edge_zip, EDGE_TITLE,
-    #                                date_short, SHARE_ORG)
+    edge_zip, alias_map = gdf_to_zipped_shp(edge_gdf, "strava_edges" + output_suffix, output_dir)
+    edge_id = publish_or_overwrite(gis, edge_zip, os.getenv("EDGE_TITLE"),
+                                   get_short_field(date_field), os.getenv("SHARE_ORG"),
+                                   alias_map=alias_map)
 
     # -- HEXAGONS -------------------------------------------------------------
     #print("\nProcessing hexagons...")
     #hex_gdf = read_and_join(
     #    shp_path=HEX_SHP, csv_path=HEX_CSV,
     #    uid_field="hex_uid", count_fields=HEX_COUNT_FIELDS,
-    #    date_field=DATE_FIELD
+    #    date_field=date_field
     #)
-    #hex_zip = gdf_to_zipped_shp(hex_gdf, "strava_hexagons" + output_suffix, OUTPUT_DIR)
-    #hex_id  = publish_or_overwrite(gis, hex_zip, HEX_TITLE,
-    #                               date_short, SHARE_ORG)
+    #hex_zip, hex_alias_map = gdf_to_zipped_shp(hex_gdf, "strava_hexagons" + output_suffix, output_dir)
+    #hex_id = publish_or_overwrite(gis, hex_zip, HEX_TITLE,
+    #                              get_short_field(date_field), SHARE_ORG,
+    #                              alias_map=hex_alias_map)
     #print(f"\nDone.\n  Edge layer  : https://www.arcgis.com/home/item.html?id={edge_id}")
     #print(f"  Hex layer   : https://www.arcgis.com/home/item.html?id={hex_id}")
 

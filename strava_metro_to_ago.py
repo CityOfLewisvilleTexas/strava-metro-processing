@@ -177,6 +177,24 @@ def safe_delete_fgdb(fgdb_path):
     raise RuntimeError(f"Could not delete FGDB due to persistent lock: {fgdb_path}")
 
 
+def add_publish_date_field(final_fc: str, source_field: str, publish_field: str = "obs_date") -> str:
+    existing = find_field_case_insensitive(final_fc, publish_field)
+    if existing:
+        arcpy.management.DeleteField(final_fc, existing)
+
+    arcpy.management.AddField(final_fc, publish_field, "DATE")
+
+    arcpy.management.CalculateField(
+        final_fc,
+        publish_field,
+        f"!{source_field}!",
+        "PYTHON3"
+    )
+
+    print(f"Created publish date field '{publish_field}' from '{source_field}'.")
+    return publish_field
+
+
 # ---------------------------------------------------------------------------
 # FGDB BUILD
 
@@ -348,25 +366,42 @@ def zip_fgdb(fgdb_path: str, zip_path: str) -> str:
 # ---------------------------------------------------------------------------
 # AGOL PUBLISHING
 
+def get_published_date_field_name(flc: FeatureLayerCollection, preferred_name: str = "date") -> str:
+    lyr = flc.layers[0]
+    fields = lyr.properties.fields
+
+    # First try preferred name
+    for f in fields:
+        if f["name"].lower() == preferred_name.lower() and f["type"] == "esriFieldTypeDate":
+            return f["name"]
+
+    # Otherwise take the first actual date field
+    for f in fields:
+        if f["type"] == "esriFieldTypeDate":
+            print(f"Using published date field '{f['name']}'")
+            return f["name"]
+
+    available = [(f["name"], f["type"]) for f in fields]
+    raise ValueError(f"No DATE field found on published layer. Available fields: {available}")
+
+
 def assert_date_field(flc: FeatureLayerCollection, field_name: str):
     lyr = flc.layers[0]
-    print(f"layer used for assert_date_field()")
-    print("Other layers and fields:")
-    for flc_lyr in flc.layers:
-        print(f"{flc_lyr}")
-        for f in flc_lyr.properties.fields:
-            print(f"name: {f.name}")
-            try:
-                print(f"alias: {f.alias}")
-            except Exception as e:
-                print(f"error getting alias {e}")
     fld = next((f for f in lyr.properties.fields if f["name"].lower() == field_name.lower()), None)
+
     if not fld:
-        print(f"Skipping field '{field_name}' not found on published layer and/or type is of NoneType.")
-    elif fld["type"] and fld["type"] != "esriFieldTypeDate":
-        print(f"Field '{field_name}' published as {fld['type']}, not a date field.")
-    else:
-        print(f"Published field '{field_name}' type: {fld['type']}")
+        available = [f.name for f in lyr.properties.fields]
+        raise ValueError(
+            f"Published layer does not contain field '{field_name}'. "
+            f"Available fields: {available}"
+        )
+
+    if fld["type"] != "esriFieldTypeDate":
+        raise ValueError(
+            f"Field '{field_name}' published as {fld['type']}, not a date field."
+        )
+
+    print(f"Published field '{field_name}' type: {fld['type']}")
 
 
 def enable_time_on_layer(flc: FeatureLayerCollection, date_field_name: str):
@@ -422,9 +457,13 @@ def publish_or_overwrite_fgdb(
     item.share(org=share_org, everyone=False)
 
     flc = FeatureLayerCollection.fromitem(item)
-    # TODO - call assert_date_field() if necessary
-    assert_date_field(flc, time_field_name)
-    enable_time_on_layer(flc, time_field_name)
+    #actual_time_field = get_published_date_field_name(flc, time_field_name)
+    #assert_date_field(flc, actual_time_field)
+    #enable_time_on_layer(flc, actual_time_field)
+
+    #assert_date_field(flc, actual_time_field)
+    # TODO - replace hardcoded name of datetime layer with variable later
+    enable_time_on_layer(flc, "obs_date")
 
     url = f"https://www.arcgis.com/home/item.html?id={item.id}"
     print(f"Published: {url}")
@@ -483,15 +522,18 @@ def main():
     arcpy.ClearWorkspaceCache_management()
 
     # After join/export, field names may be prefixed. Find the actual date field name in output.
-    published_time_field = find_output_join_field(final_fc, fgdb_date_field)
-    if not published_time_field:
+    joined_date_field = find_output_join_field(final_fc, fgdb_date_field)
+    if not joined_date_field:
         available = [f.name for f in arcpy.ListFields(final_fc)]
         raise ValueError(
             f"Could not find output time field derived from '{fgdb_date_field}'. "
             f"Available fields: {available}"
         )
 
-    print(f"Resolved final time field: {published_time_field}")
+    print(f"Resolved joined date field: {joined_date_field}")
+
+    published_time_field = add_publish_date_field(final_fc, joined_date_field, "obs_date")
+    print(f"Using publish date field: {published_time_field}")
 
     zip_path = str(output_dir / "strava_edges_fgdb.zip")
         # Find the published time field name first

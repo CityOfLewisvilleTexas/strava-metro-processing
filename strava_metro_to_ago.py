@@ -489,7 +489,8 @@ def main():
     output_dir = Path(os.getenv("OUTPUT_DIR"))
     share_org = as_bool(os.getenv("SHARE_ORG", "true"))
 
-    uid_field = "edge_uid"
+    #uid_field = "edge_uid"
+    uid_field = "edgeUID"
     csv_date_field = os.getenv("DATE_FIELD")  # e.g. "date"
     fgdb_date_field = "date_real"
 

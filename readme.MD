@@ -11,9 +11,8 @@ It is designed for reliable handling of **date fields**, avoiding common shapefi
 - [x] create local gdb from edge data
 - [x] publish test feature class as ArcGIS Online (AGO) layer
 - [ ] fix issue with date-only and datetime fields
-- [ ] set up visualization in AGO
-- [ ] modify readme
-- [ ] send link to AGO web map to Jon and Jose
+- [ ] automate process of renaming files downloaded from Strava Metro
+- [ ] automate process of saving the csv file downloaded from Strava Metro with the field name 'edgeUID' in place of the default 'edge_uid'
 
 ---
 
@@ -103,11 +102,14 @@ SHARE_ORG=true
 
 ## ▶️ Usage
 
-Run from the ArcGIS Pro Python environment:
+1. download either the rides (pedalcyclists) or walk data (edges or hexagons) from the Strava Metro interface as explained in their [documentation](https://stravametro.zendesk.com/hc/en-us/articles/360051202734-Edge-Counts-Data-Export-and-Download)
+2. extract the downloaded files and rename each file if desired e.g. strava_metro_edges_ride_my_county_202602401_20260430.* (this step can be automated in a future version of the script)
+3. modify the necessary variables in the .env file as explained in .env.example
+4. in the csv file downloaded from Strava Metro, change the name of column 'edge_uid' to 'edgeUID' so it matches the default field name in the shapefile (this step can be automated in a future version of the script)
+5. from a terminal, access the ArcGIS Pro Python environment (may need to activate a virtual environment)
+6. run ```python strava_metro_to_ago_fgdb.py``` (Note that the following error will most likely be thrown, but the feature layer should still be published to ArcGIS Online: ```Exception: Unable to update feature service layer definition.``` This is on the list of items to be addressed in future version of the script.)
 
-```bash
-python strava_metro_to_ago_fgdb.py
-```
+
 
 ---
 
@@ -225,7 +227,7 @@ Otherwise:
 ## 📄 License / Data Use
 
 Strava Metro data is subject to licensing restrictions.
-Ensure compliance with Strava’s terms of use.
+Ensure compliance with Strava’s terms of use. Among other items, sharing the data beyond one's own organization is prohibited.
 
 ---
 
